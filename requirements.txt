@@ -1,0 +1,11 @@
+streamlit>=1.25.0
+pandas
+numpy
+requests
+openai
+statsmodels
+plotly
+geopandas
+pennylane
+jax
+jaxlib
