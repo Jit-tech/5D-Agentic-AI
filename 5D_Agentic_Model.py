@@ -22,7 +22,7 @@ def fetch_eurostat(dataset: str, years: int = 10) -> pd.DataFrame:
     """
     Fetches Eurostat data; on error returns synthetic series.
     """
-    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}?geo=IE"
+    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/2.1/data/{dataset}"?geo=IE"
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
@@ -58,7 +58,7 @@ def agentic_ai_response(prompt: str, role: str) -> str:
     Generic GPT-4o mini agent response builder.
     """
     try:
-        res = openai.ChatCompletion.create(
+        res = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system",  "content": f"You are {role}."},
