@@ -22,7 +22,7 @@ def fetch_eurostat(dataset: str, years: int = 10) -> pd.DataFrame:
     """
     Fetches Eurostat data; on error returns synthetic series.
     """
-    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/2.1/data/{dataset}"?geo=IE"
+    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/2.1/data/{dataset}?geo=IE"
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
