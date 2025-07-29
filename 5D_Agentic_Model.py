@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -5,208 +6,167 @@ import requests
 import openai
 import statsmodels.api as sm
 import plotly.graph_objects as go
-import geopandas as gpd
-import os
 
-# --- Attempt to import PennyLane for quantum features ---
-try:
-    import pennylane as qml
-    from pennylane import numpy as pnp
-    QML_AVAILABLE = True
-except (ImportError, AttributeError):
-    QML_AVAILABLE = False
+# Optional: RL imports
+from collections import defaultdict
 
-# --- Configuration ---
-# OpenAI API Key
-api_key = None
-try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-except Exception:
-    api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    st.error("OpenAI API key not found. Set it in Streamlit secrets or OPENAI_API_KEY environment variable.")
-else:
-    openai.api_key = api_key
+# ------------------ Configuration ------------------
+# Load OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")
+if not openai.api_key:
+    st.error("OpenAI API key not found. Set OPENAI_API_KEY in your environment.")
 
-# Path to counties GeoJSON\GEOJSON_PATH = "ie_counties.geojson"
+# ------------------ Utility Functions ------------------
 
-# --- Utility Functions ---
-
-def fetch_eurostat(dataset: str, geo: str = "IE") -> pd.DataFrame:
-    """Fetch national Eurostat data for given dataset."""
-    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}?filterNonGeo=1&geo={geo}"
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        st.error(f"Eurostat fetch error: {resp.status_code}")
-        return pd.DataFrame()
-    values = resp.json().get('value', {})
-    years = sorted({int(k.split(":")[-1]) for k in values.keys()})
-    df = pd.DataFrame({"Year": years})
-    df[dataset] = [values.get(f"{geo}:{y}", np.nan) for y in years]
-    return df.dropna()
+def fetch_eurostat(dataset: str, years: int = 10) -> pd.DataFrame:
+    """
+    Fetches Eurostat data; on error returns synthetic series.
+    """
+    url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}?geo=IE"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get('value', {})
+            years_list = sorted({int(k.split(':')[-1]) for k in data.keys()})
+            df = pd.DataFrame({"Year": years_list,
+                               dataset: [data.get(f"IE:{y}", np.nan) for y in years_list]})
+            if df[dataset].dropna().empty:
+                raise ValueError
+            return df.dropna()
+    except Exception:
+        st.warning(f"Failed to fetch {dataset}, using synthetic data.")
+    # Fallback synthetic data
+    yrs = list(range(pd.Timestamp.now().year - years + 1, pd.Timestamp.now().year + 1))
+    values = np.random.uniform(0.5, 1.5, len(yrs))
+    return pd.DataFrame({"Year": yrs, dataset: values})
 
 
 def run_econometric_diagnostics(df: pd.DataFrame, var: str):
-    """Perform OLS regression, with safety checks for empty or insufficient data."""
-    if df.empty:
-        st.error("No data available for regression.")
-        return None
-    if len(df) < 2:
-        st.error("Not enough data points for regression.")
+    """
+    Runs OLS and returns the fitted model; returns None if data insufficient.
+    """
+    if df.shape[0] < 2:
         return None
     X = sm.add_constant(np.arange(len(df)))
     y = df[var].values
-    return sm.OLS(y, X).fit()
+    model = sm.OLS(y, X).fit()
+    return model
+
+
+def agentic_ai_response(prompt: str, role: str) -> str:
+    """
+    Generic GPT-4o mini agent response builder.
+    """
+    try:
+        res = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system",  "content": f"You are {role}."},
+                {"role": "user",    "content": prompt}
+            ],
+            max_tokens=400
+        )
+        return res.choices[0].message.content
+    except Exception as e:
+        return f"AI response error: {e}"
 
 
 def quantum_noise(df: pd.DataFrame, intensity: float = 0.05) -> pd.DataFrame:
-    df = df.copy()
-    noise = np.random.normal(0, intensity, size=len(df))
-    df["Quantum_Adjusted"] = df.iloc[:, 1] * (1 + noise)
-    return df
+    """
+    Adds Gaussian noise to simulate quantum uncertainty.
+    """
+    noisy = df.copy()
+    noise = np.random.normal(0, intensity, size=len(noisy))
+    noisy[f"{noisy.columns[1]}_quantum"] = noisy.iloc[:, 1] * (1 + noise)
+    return noisy
 
 
-def agentic_ai_response(messages: list, model: str = "gpt-4o-mini") -> str:
-    resp = openai.ChatCompletion.create(model=model, messages=messages, max_tokens=400)
-    return resp.choices[0].message.content
+def train_rl_agent(df: pd.DataFrame, var: str, episodes: int = 50):
+    """
+    Simple Q-learning stub for optimal policy discovery.
+    """
+    # Discrete state: year index; actions: -1, 0, +1 subsidy change
+    states = list(range(len(df)))
+    actions = [-1, 0, 1]
+    Q = defaultdict(lambda: {a: 0. for a in actions})
+    alpha, gamma, eps = 0.1, 0.9, 0.1
+    for ep in range(episodes):
+        state = 0
+        for t in range(len(states)-1):
+            if np.random.random() < eps:
+                action = np.random.choice(actions)
+            else:
+                action = max(Q[state], key=Q[state].get)
+            reward = -abs(df[var].iloc[t+1] - df[var].iloc[t] * (1 + action*0.01))
+            next_s = t+1
+            best_next = max(Q[next_s].values())
+            Q[state][action] += alpha * (reward + gamma*best_next - Q[state][action])
+            state = next_s
+    # Derive policy for first state
+    best_action = max(Q[0], key=Q[0].get)
+    return best_action
 
-# --- Quantum LDPC Helpers ---
+# ------------------ Streamlit App ------------------
+st.title("5D Quantum-Agentic Econometric Simulator")
 
-def get_quantum_device(backend_name: str = "lightning.qubit", wires: int = 12):
-    if not QML_AVAILABLE:
-        raise RuntimeError("PennyLane unavailable.")
-    return qml.device(backend_name, wires=wires)
+dataset = st.text_input("Eurostat Dataset Code:", "sdg_02_40")
+run = st.button("Run Simulation")
 
+if run:
+    # Fetch data
+    df = fetch_eurostat(dataset)
+    st.subheader("Live Data")
+    st.write(df)
 
-def generate_ldpc_matrix(n: int, m: int, density: float = 0.25) -> np.ndarray:
-    H = (np.random.rand(m, n) < density).astype(int)
-    for i in range(m):
-        if not H[i].any():
-            H[i, np.random.randint(0, n)] = 1
-    return H
+    # Layer 1: Diagnostic AI
+    model = run_econometric_diagnostics(df, dataset)
+    if not model:
+        st.error("Insufficient data for econometric diagnostics.")
+        st.stop()
+    st.subheader("Agent 1: Diagnostic AI")
+    st.text(model.summary())
 
+    # Layer 2: Interpretive AI
+    st.subheader("Agent 2: Interpretive AI")
+    interp = agentic_ai_response(f"Explain this regression:\n{model.summary()}", "Interpretive AI")
+    st.write(interp)
 
-def build_qldpc_qnode(H: np.ndarray, backend: str = "lightning.qubit"):
-    dev = get_quantum_device(backend, wires=H.shape[1] + H.shape[0])
-    @qml.qnode(dev)
-    def qldpc_syndrome(prep_angles):
-        for i, angle in enumerate(prep_angles): qml.RY(angle, wires=i)
-        for row in range(H.shape[0]):
-            anc = H.shape[1] + row
-            for col in range(H.shape[1]):
-                if H[row, col]: qml.CNOT(wires=[col, anc])
-        return [qml.sample(qml.PauliZ(i)) for i in range(H.shape[1], H.shape[1]+H.shape[0])]
-    return qldpc_syndrome
+    # Layer 3: Policy Simulation AI
+    st.subheader("Agent 3: Policy Simulation AI")
+    policy = agentic_ai_response(
+        "Simulate a 10% subsidy increase and its impact based on regression.",
+        "Policy AI"
+    )
+    st.write(policy)
 
+    # Layer 4: Quantum Scaling AI
+    st.subheader("Agent 4: Quantum Scaling AI")
+    noisy_df = quantum_noise(df)
+    st.write(noisy_df)
+    anomaly = agentic_ai_response(
+        "Data shows volatility from quantum noise. Recommend policy adjustments.",
+        "Quantum AI"
+    )
+    st.write(anomaly)
 
-def decode_syndrome(syndrome: list) -> list:
-    return syndrome
+    # Layer 5: Reinforcement-Learning AI
+    st.subheader("Agent 5: Reinforcement-Learning AI")
+    best_act = train_rl_agent(df, dataset)
+    st.write(f"Recommended action (subsidy change): {best_act}")
 
-# --- Reinforcement Learning Agent ---
-class PolicyEnv:
-    def __init__(self, df: pd.DataFrame, model):
-        self.df = df; self.model = model; self.actions = np.arange(0, .31, .05)
-        self.state = df.iloc[-1,1]
-    def step(self, idx):
-        subsidy = self.actions[idx]
-        X = sm.add_constant(np.arange(len(self.df)))
-        y_pred = self.model.predict(X)
-        reward = -abs((y_pred[-1]*(1+subsidy))-y_pred[-1])
-        return self.state, reward, True, {}
-    def reset(self): return self.state
-
-def train_q_learning_agent(env: PolicyEnv, episodes: int=20, alpha: float=.1, gamma: float=.9):
-    q_table = np.zeros((1,len(env.actions)))
-    for _ in range(episodes):
-        _ = env.reset()
-        for a in range(len(env.actions)):
-            _,r,_,_ = env.step(a)
-            q_table[0,a] += alpha*(r+gamma*np.max(q_table[0])-q_table[0,a])
-    return q_table
-
-def select_best_action(q_table: np.ndarray) -> int:
-    return int(np.argmax(q_table[0]))
-
-# --- Multi-Agent Debate ---
-def multi_agent_debate(topic: str, agents: list, rounds: int=3) -> str:
-    msgs=[{"role":"system","content":f"Debate Moderator: {topic}"}]
-    for ag in agents: msgs.append({"role":"system","content":f"Agent {ag['name']}: {ag['system_prompt']}"})
-    for _ in range(rounds):
-        for ag in agents:
-            msgs.append({"role":"user","content":f"{ag['name']}, analysis:"})
-            rep=agentic_ai_response(msgs); msgs.append({"role":"assistant","content":rep})
-    return "\n\n".join([m['content'] for m in msgs if m['role'] in ['assistant','user']])
-
-# --- Streamlit App ---
-st.title("5D Quantum-Agentic Simulator with Synthetic Counties")
-mode=st.sidebar.selectbox("Mode",["National","County Drill-Down"])
-dataset=st.sidebar.text_input("Eurostat Dataset","sdg_02_40")
-enable_qldpc=st.sidebar.checkbox("Enable qLDPC",False)
-n=st.sidebar.slider("LDPC n",4,32,8)
-m=st.sidebar.slider("LDPC m",1,16,4)
-train_rl=st.sidebar.button("Train RL Agent")
-
-# Fetch national data
-national_df=fetch_eurostat(dataset,"IE")
-if national_df.empty: st.error("No Eurostat data. Check dataset code."); st.stop()
-
-# Select data
-if mode=="National": df=national_df; st.write("### National Data",df)
-else:
-    gdf=gpd.read_file(GEOJSON_PATH)[['NAME']]
-    county=st.sidebar.selectbox("County",gdf['NAME'])
-    base=national_df.copy(); base['value']=base[dataset]
-    noise=np.random.normal(0,0.02,len(base)); base['value']*=1+noise
-    df=pd.DataFrame({'Year':base['Year'],dataset:base['value']})
-    st.write(f"### Synthetic Data for {county}",df)
-
-# Regression
-diagnosis=run_econometric_diagnostics(df,dataset)
-if not diagnosis: st.stop()
-st.text(diagnosis.summary())
-
-# Interpretation
-i2=agentic_ai_response([
-    {'role':'system','content':'You are Interpretive AI.'},
-    {'role':'user','content':f'Explain regression: {diagnosis.summary()}'}
-]); st.subheader('Interpretation'); st.write(i2)
-
-# Policy
-p3=agentic_ai_response([
-    {'role':'system','content':'You are Policy AI.'},
-    {'role':'user','content':'Simulate 10% subsidy increase.'}
-]); st.subheader('Policy Simulation'); st.write(p3)
-
-# Quantum
-st.subheader('Quantum Scaling')
-if enable_qldpc and QML_AVAILABLE:
-    H=generate_ldpc_matrix(n,m); st.write('H:',H)
-    qnode=build_qldpc_qnode(H)
-    sample=qnode(np.random.uniform(0,np.pi,n)); st.write('Syndrome:',sample)
-else:
-    qdf=quantum_noise(df); st.write(qdf)
-
-# Reinforcement Learning
-st.subheader('Reinforcement Learning')
-env=PolicyEnv(df,diagnosis)
-if train_rl:
-    qt=train_q_learning_agent(env); idx=select_best_action(qt)
-    st.write(f'RL suggests subsidy: {env.actions[idx]*100:.1f}%')
-else: st.write('Train RL agent to proceed')
-
-# Visualization
-fig=go.Figure(data=[go.Scatter3d(
-    x=df['Year'],y=df[dataset],z=df.get('Quantum_Adjusted',df[dataset]),
-    mode='lines+markers',marker=dict(size=5,colorscale='Viridis',color=df.get('Quantum_Adjusted',df[dataset]))
-)]); fig.update_layout(scene=dict(xaxis_title='Year',yaxis_title=dataset,zaxis_title='Quantum_Adjusted'),title='5D Simulation'); st.plotly_chart(fig)
-
-# Debate
-st.subheader('Multi-Agent Debate')
-ag=[
-    {'name':'Diagnostic AI','system_prompt':'Assess statistical validity.'},
-    {'name':'Interpretive AI','system_prompt':'Narrate regression.'},
-    {'name':'Policy AI','system_prompt':'Debate policy.'},
-    {'name':'Quantum AI','system_prompt':'Discuss uncertainty.'},
-    {'name':'RL AI','system_prompt':'Advocate actions.'}
-]
-deb=multi_agent_debate(f'{dataset} impact',ag); st.text(deb)
+    # Visualization: 3D + quantum
+    st.subheader("4D Visualization with Quantum Axis")
+    fig = go.Figure(data=[
+        go.Scatter3d(
+            x=noisy_df["Year"],
+            y=noisy_df[dataset],
+            z=noisy_df[f"{dataset}_quantum"],
+            mode='lines+markers',
+            marker=dict(size=6, color=noisy_df[f"{dataset}_quantum"], colorscale='Viridis')
+        )
+    ])
+    fig.update_layout(
+        scene=dict(xaxis_title='Year', yaxis_title='Value', zaxis_title='Quantum-Adjusted'),
+        title='5D Simulation'
+    )
+    st.plotly_chart(fig)
