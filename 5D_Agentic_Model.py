@@ -22,23 +22,29 @@ def fetch_eurostat(dataset: str, years: int = 10) -> pd.DataFrame:
     """
     Fetches Eurostat data for Ireland via API v2.1; falls back to synthetic if error.
     """
-    url = f"https://api.europa.eu/eurostat/data/v2.1/{dataset}?geo=IE"
+    # Updated Eurostat API endpoint with filter parameter
+    url = f"https://api.europa.eu/eurostat/api/data/v2.1/{dataset}?filter=geo:IE"
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
-        data = resp.json().get("value", {})
-        years_list = sorted({int(k.split(":")[-1]) for k in data.keys()})
-        df = pd.DataFrame({"Year": years_list,
-                           dataset: [data.get(f"IE:{y}", np.nan) for y in years_list]})
+        payload = resp.json()
+        # v2.1 payload contains 'value' with keys 'geo:year'
+        values = payload.get("value", {})
+        years_list = sorted({int(k.split(":")[-1]) for k in values.keys() if k.startswith("IE:")})
+        df = pd.DataFrame({
+            "Year": years_list,
+            dataset: [values.get(f"IE:{y}", np.nan) for y in years_list]
+        })
         if df[dataset].dropna().empty:
             raise ValueError
         return df.dropna()
     except Exception:
         st.warning(f"Failed to fetch {dataset} from Eurostat API; using synthetic data.")
+    # Synthetic fallback
     current = pd.Timestamp.now().year
     yrs = list(range(current - years + 1, current + 1))
     values = np.random.uniform(0.5, 1.5, len(yrs))
-    return pd.DataFrame({"Year": yrs, dataset: values})
+    return pd.DataFrame({"Year": yrs, dataset: values})({"Year": yrs, dataset: values})
 
 
 def run_econometric_diagnostics(df: pd.DataFrame, var: str):
